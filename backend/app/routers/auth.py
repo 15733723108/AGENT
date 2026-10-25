@@ -5,7 +5,16 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.entities import User
 from app.routers.deps import get_current_user, require_role
-from app.schemas.auth import RegisterRequest, RegisterOut, ReviewResult, TeacherReviewOut, TokenOut, UserOut
+from app.schemas.auth import (
+    ChangePasswordOut,
+    ChangePasswordRequest,
+    RegisterRequest,
+    RegisterOut,
+    ReviewResult,
+    TeacherReviewOut,
+    TokenOut,
+    UserOut,
+)
 from app.utils.logging_conf import get_logger
 from app.utils.security import create_access_token, hash_password, verify_password
 
@@ -67,6 +76,22 @@ def login(payload: dict, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserOut, summary="当前登录用户")
 def me(user: User = Depends(get_current_user)):
     return _user_out(user)
+
+
+@router.post("/change-password", response_model=ChangePasswordOut, summary="修改当前用户密码")
+def change_password(
+    req: ChangePasswordRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(req.old_password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="原密码不正确")
+    if req.old_password == req.new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码不能与原密码相同")
+    user.password_hash = hash_password(req.new_password)
+    db.commit()
+    logger.info("用户修改密码: %s", user.username)
+    return ChangePasswordOut(message="密码修改成功，请重新登录")
 
 
 @router.get("/pending-teachers", response_model=list[TeacherReviewOut], summary="待审核教师列表")

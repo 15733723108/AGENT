@@ -47,3 +47,12 @@ export function rejectTeacher(userId: number) {
 export function getProfile() {
   return request.get<UserInfo>('/auth/me')
 }
+
+export interface ChangePasswordRequest {
+  old_password: string
+  new_password: string
+}
+
+export function changePassword(data: ChangePasswordRequest) {
+  return request.post<{ message: string }>('/auth/change-password', data)
+}

@@ -42,6 +42,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1, max_length=64, description="原密码")
+    new_password: str = Field(..., min_length=6, max_length=64, description="新密码")
+
+
+class ChangePasswordOut(BaseModel):
+    message: str
+
+
 class TeacherReviewOut(BaseModel):
     """待审核教师信息。"""
 
