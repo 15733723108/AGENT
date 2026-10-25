@@ -1,0 +1,43 @@
+# ===== Web =====
+fastapi==0.111.*
+uvicorn[standard]==0.30.*
+python-multipart
+
+# ===== LangChain =====
+langchain==0.3.*
+langchain-core==0.3.*
+langchain-community==0.3.*
+langchain-openai==0.3.*
+langchain-text-splitters==0.3.*
+langchain-milvus==0.1.*
+langchain-postgres==0.0.*
+
+# ===== 数据库 =====
+sqlalchemy==2.0.*
+pymysql==1.1.*
+
+# ===== 缓存 / 队列 =====
+redis==5.*
+celery==5.3.*
+
+# ===== 配置 / 校验 =====
+pydantic==2.*
+pydantic-settings==2.*
+
+# ===== 文档解析 =====
+pypdf==5.*
+python-docx==1.1.*
+openpyxl==3.1.*
+
+# ===== 安全 =====
+passlib[bcrypt]==1.7.*
+bcrypt==4.0.1  # 固定版本：passlib 1.7.4 与 bcrypt 5.x 不兼容
+python-jose[cryptography]==3.3.*
+
+# ===== HTTP 客户端（降级探测 / 测试） =====
+httpx==0.27.*
+
+# ===== 可选依赖（按需安装，见 README）=====
+# sentence-transformers          # 本地 Embedding（BAAI/bge-m3）
+# rapidocr_onnxruntime==1.3.*    # 扫描件 OCR
+# psycopg2-binary                # pgvector 后端（VECTOR_BACKEND=pgvector 时）

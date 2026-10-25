@@ -1,0 +1,100 @@
+# 沧州市劝学路小学智能体 - Docker Compose
+# 中间件（MySQL/Redis/MinIO）+ 后端 + 前端（Nginx）
+# 使用方式：
+#   docker compose up -d --build
+#   # 仅启动中间件做本地开发：
+#   docker compose up -d mysql redis
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: czqxl-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-school_agent}
+      MYSQL_USER: ${MYSQL_USER:-school}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-school123456}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docs/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-root123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: czqxl-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # MinIO（可选：文档/试卷文件存储，本地开发可注释掉）
+  minio:
+    image: minio/minio:latest
+    container_name: czqxl-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: czqxl-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-school}:${MYSQL_PASSWORD:-school123456}@mysql:3306/${MYSQL_DATABASE:-school_agent}?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      LLM_MODE: ${LLM_MODE:-api}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-sk-xxx}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_MODEL_STRONG: ${LLM_MODEL_STRONG:-deepseek-chat}
+      VECTOR_BACKEND: ${VECTOR_BACKEND:-memory}
+      JWT_SECRET: ${JWT_SECRET:-please-change-me}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/kb_docs:/app/kb_docs
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: czqxl-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
