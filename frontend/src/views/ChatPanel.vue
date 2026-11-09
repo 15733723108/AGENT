@@ -9,38 +9,82 @@
         @show="loadSessionList"
       >
         <template #reference>
-          <button class="tool-btn" :disabled="busy">历史会话</button>
+          <button class="tool-btn" type="button" :disabled="busy">历史会话</button>
         </template>
         <div class="history-panel">
-          <p v-if="!historyList.length" class="history-empty">暂无历史会话</p>
-          <div
-            v-for="s in historyList"
-            :key="s.id"
-            class="history-item"
-            :class="{ on: s.id === sessionId }"
-            @click="switchSession(s.id)"
-          >
-            <div class="hi-main">
-              <div class="hi-title">{{ s.title || '新会话' }}</div>
-              <div class="hi-time">{{ formatTime(s.updated_at || s.created_at) }}</div>
+          <StateBlock v-if="historyState === 'loading'" state="loading" :skeleton-rows="4" compact />
+          <StateBlock
+            v-else-if="historyState === 'error'"
+            state="error"
+            title="历史会话加载失败"
+            description="服务暂时不可用，可重试；也可以直接新建会话继续提问。"
+            retry-text="重试"
+            compact
+            @retry="loadSessionList"
+          />
+          <StateBlock
+            v-else-if="!historyList.length"
+            state="empty"
+            title="暂无历史会话"
+            description="发起一次提问后，会话会自动保存在这里。"
+            compact
+          />
+          <template v-else>
+            <div
+              v-for="s in historyList"
+              :key="s.id"
+              class="history-item"
+              :class="{ on: s.id === sessionId }"
+            >
+              <button
+                type="button"
+                class="hi-main"
+                :aria-current="s.id === sessionId ? 'true' : undefined"
+                @click="switchSession(s.id)"
+              >
+                <span class="hi-title">{{ s.title || '新会话' }}</span>
+                <span class="hi-time">{{ formatTime(s.updated_at || s.created_at) }}</span>
+              </button>
+              <button
+                type="button"
+                class="hi-del"
+                :aria-label="`删除会话：${s.title || '新会话'}`"
+                @click.stop="removeSession(s.id)"
+              >
+                <el-icon :size="14"><Delete /></el-icon>
+              </button>
             </div>
-            <el-icon class="hi-del" :size="14" @click.stop="removeSession(s.id)"><Delete /></el-icon>
-          </div>
+          </template>
         </div>
       </el-popover>
 
-      <button class="tool-btn" @click="newSession" :disabled="busy">新建会话</button>
+      <button class="tool-btn" type="button" @click="newSession" :disabled="busy">新建会话</button>
       <button
         v-if="showRefs && currentRefs.length"
         class="tool-btn muted"
+        type="button"
+        :aria-expanded="refsVisible"
         @click="refsVisible = !refsVisible"
       >
         引用来源 ({{ currentRefs.length }})
       </button>
     </div>
 
-    <div ref="scrollRef" class="chat-scroll">
+    <div
+      ref="scrollRef"
+      class="chat-scroll"
+      role="log"
+      aria-label="对话记录"
+      aria-live="polite"
+      aria-relevant="additions text"
+      :aria-busy="busy"
+    >
       <div class="chat-inner">
+        <div v-if="initError" class="init-error" role="alert">
+          <el-icon :size="15"><WarningFilled /></el-icon>
+          <span>历史会话加载失败，仍可继续提问。</span>
+          <button type="button" class="init-retry" @click="retryInit">重试</button>
+        </div>
         <div v-if="!messages.length && !busy" class="chat-empty">
           <template v-if="isGeneral">
             <svg viewBox="0 0 176 70" class="empty-svg" fill="none" aria-hidden="true">
@@ -71,6 +115,13 @@
           <div v-else class="turn assistant-turn">
             <span class="avatar avatar-assistant"><el-icon :size="16"><School /></el-icon></span>
             <div class="assistant-main">
+            <!-- 首包到达前的等待反馈：避免「点了发送却没有任何动静」 -->
+            <div v-if="showPending(m, i)" class="pending-row" role="status">
+              <span class="pending-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span>{{ pendingText }}</span>
+              <button type="button" class="pending-stop" @click="stop">停止</button>
+            </div>
+
             <!-- 通用问答：分支推理 -->
             <template v-if="isGeneral">
               <div v-if="m.branches && m.branches.length" class="branch-heading">
@@ -169,6 +220,7 @@
       <textarea
         ref="textareaRef"
         v-model="question"
+        aria-label="输入您的问题"
         :placeholder="busy ? '继续追问…' : '请输入您的问题，Enter 发送，Shift+Enter 换行'"
         rows="2"
         @keydown.enter.exact.prevent="send"
@@ -220,8 +272,10 @@ import {
   School,
   User,
   VideoPause,
+  WarningFilled,
 } from '@element-plus/icons-vue'
 import { marked } from 'marked'
+import StateBlock from '@/components/StateBlock.vue'
 import {
   createSchoolSession,
   createSession,
@@ -260,8 +314,25 @@ const currentRefs = ref<any[]>([])
 const refsVisible = ref(true)
 const historyList = ref<SessionInfo[]>([])
 const historyVisible = ref(false)
+const historyState = ref<'loading' | 'ready' | 'error'>('loading')
+const initError = ref(false)
 const scrollRef = ref<HTMLElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
+
+// 等待反馈：首包（branches / refs / token）到达前显示，避免界面「无响应」
+const pendingText = computed(() => {
+  if (isGeneral.value) return '正在梳理几种解题思路…'
+  return phase.value === 'thinking' ? '正在检索知识库…' : '正在生成回答…'
+})
+
+function showPending(m: ChatMessage, i: number): boolean {
+  if (i !== messages.value.length - 1 || !busy.value || m.role !== 'assistant') return false
+  if (m.content) return false
+  // 通用问答：分支卡片出现后由卡片自身承接反馈
+  if (isGeneral.value) return !m.branches?.length
+  // 学校信息问答：开启 Think 时已有思考条，不重复显示
+  return !think.value || phase.value !== 'thinking'
+}
 
 let timer: number | null = null
 let controller: AbortController | null = null
@@ -342,8 +413,24 @@ function seedGreeting() {
 }
 
 async function loadSessionList() {
-  const api = props.module === 'school_info' ? listSchoolSessions : listSessions
-  historyList.value = (await api()) as unknown as SessionInfo[]
+  historyState.value = 'loading'
+  try {
+    const api = props.module === 'school_info' ? listSchoolSessions : listSessions
+    historyList.value = (await api()) as unknown as SessionInfo[]
+    historyState.value = 'ready'
+    initError.value = false
+  } catch {
+    // 全局拦截器已弹出错误提示，这里只记录状态供面板/横幅渲染重试入口
+    historyState.value = 'error'
+  }
+}
+
+async function retryInit() {
+  await loadSessionList()
+  if (historyState.value === 'ready' && !sessionId.value && historyList.value.length) {
+    sessionId.value = historyList.value[0].id
+    await loadHistory()
+  }
 }
 
 async function switchSession(id: number) {
@@ -480,6 +567,11 @@ function stop() {
 onMounted(async () => {
   // 懒加载：进入模块时读取历史会话，若有则载入最近一条，否则显示开局提示词（不创建占位会话）
   await loadSessionList()
+  if (historyState.value === 'error') {
+    initError.value = true
+    seedGreeting()
+    return
+  }
   if (historyList.value.length) {
     sessionId.value = historyList.value[0].id
     await loadHistory()
@@ -498,7 +590,8 @@ onUnmounted(() => {
 .chat-panel {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 84px);
+  /* 与 MainLayout 共用同一组变量：header 高度 + content 上下 padding */
+  height: calc(100dvh - var(--app-header-h) - var(--app-gutter) * 2);
   background: #ffffff;
 }
 
@@ -536,10 +629,10 @@ onUnmounted(() => {
   padding: 20px 0;
 }
 .chat-inner {
-  width: 90%;
-  max-width: 90%;
+  width: 100%;
+  max-width: 860px;
   margin: 0 auto;
-  padding: 0 20px;
+  padding: 0 var(--space-2);
   box-sizing: border-box;
 }
 
@@ -836,14 +929,20 @@ onUnmounted(() => {
 
 .composer {
   flex-shrink: 0;
-  max-width: 80%;
-  width: 80%;
+  width: 100%;
+  max-width: 860px;
   margin: 0 auto;
   background: #ffffff;
   border: 1px solid #e7eaf0;
   border-radius: 8px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   padding: 12px 12px 10px;
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+/* textarea 自身 outline:none，用容器焦点环补足键盘可见性 */
+.composer:focus-within {
+  border-color: var(--notion-blue);
+  box-shadow: 0 0 0 2px rgba(47, 91, 216, 0.18);
 }
 .composer textarea {
   display: block;
@@ -923,6 +1022,113 @@ onUnmounted(() => {
   opacity: 0.3;
   cursor: not-allowed;
 }
+
+/* ============ 初始化失败横幅 ============ */
+.init-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--notion-text-secondary);
+  background: var(--el-color-danger-light-9);
+  border: 1px solid var(--el-color-danger-light-7);
+  border-radius: var(--radius-sm);
+}
+.init-error .el-icon {
+  flex-shrink: 0;
+  color: var(--notion-red);
+}
+.init-retry {
+  margin-left: auto;
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--notion-blue);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ============ 首包等待态 ============ */
+.pending-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: 12px;
+  color: var(--notion-text-muted);
+}
+.pending-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.pending-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--notion-blue);
+  animation: pending-bounce 1.1s ease-in-out infinite;
+}
+.pending-dots i:nth-child(2) { animation-delay: 0.15s; }
+.pending-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes pending-bounce {
+  0%, 70%, 100% { opacity: 0.3; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-3px); }
+}
+.pending-stop {
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--notion-text-secondary);
+  background: transparent;
+  border: 1px solid var(--notion-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pending-stop:hover {
+  background: var(--notion-hover);
+}
+
+/* ============ 窄屏适配 ============ */
+@media (max-width: 768px) {
+  .chat-scroll {
+    padding: 12px 0;
+  }
+  .chat-toolbar {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .tool-btn {
+    padding: 5px 8px;
+  }
+  .chat-empty {
+    padding-top: 56px;
+  }
+  .empty-svg {
+    width: 140px;
+    height: 56px;
+  }
+  .user-bubble {
+    max-width: calc(100% - 38px);
+  }
+  .branch-fan {
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+  .branch-card {
+    min-width: 170px;
+  }
+  .composer {
+    padding: 10px 10px 8px;
+  }
+  .explore-label {
+    display: none;
+  }
+}
 </style>
 
 <style>
@@ -954,11 +1160,20 @@ onUnmounted(() => {
 .history-item.on {
   background: #f2f4f7;
 }
+/* 会话条目改为两个并列的原生 button，键盘可聚焦、无嵌套交互元素 */
 .hi-main {
   flex: 1;
   min-width: 0;
+  display: block;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
 }
 .hi-title {
+  display: block;
   font-size: 13px;
   color: #15181f;
   white-space: nowrap;
@@ -966,16 +1181,26 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 .hi-time {
+  display: block;
   margin-top: 2px;
   font-size: 11px;
   color: #98a1b0;
 }
 .hi-del {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
   color: #98a1b0;
-  transition: color 150ms ease;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease;
 }
 .hi-del:hover {
   color: #eb5757;
+  background: var(--el-color-danger-light-9);
 }
 </style>

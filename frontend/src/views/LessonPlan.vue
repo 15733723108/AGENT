@@ -1,7 +1,7 @@
 <template>
   <div class="lesson-page">
     <el-row :gutter="16">
-      <el-col :span="8">
+      <el-col :xs="24" :sm="24" :md="8">
         <el-card>
           <template #header><span class="card-title">生成条件</span></template>
           <el-form label-position="top">
@@ -62,7 +62,7 @@
         </el-card>
       </el-col>
 
-      <el-col :span="16">
+      <el-col :xs="24" :sm="24" :md="16">
         <el-card>
           <template #header>
             <div class="card-title-row">
@@ -73,7 +73,13 @@
               </div>
             </div>
           </template>
-          <div v-if="!current" class="empty">填写左侧条件后点击「一键生成教案」</div>
+          <StateBlock
+            v-if="!current"
+            :state="loading ? 'loading' : 'empty'"
+            :title="loading ? '正在生成教案' : '还没有教案'"
+            :description="loading ? '正在检索教材参考并组织教学环节，请稍候。' : '填写左侧的学科、年级与课题，点击「一键生成教案」即可开始。'"
+            :skeleton-rows="8"
+          />
           <div v-else class="lesson-content">
             <div class="lesson-head">
               <h2>{{ current.topic }}</h2>
@@ -139,6 +145,7 @@ import { ElMessage } from 'element-plus'
 import { generateLesson, listLessons, exportLesson } from '@/api/modules/lesson'
 import type { LessonPlan } from '@/types'
 import DownloadButton from '@/components/DownloadButton.vue'
+import StateBlock from '@/components/StateBlock.vue'
 
 const subjects = ['语文', '数学', '英语', '科学', '道德与法治', '音乐', '美术', '体育']
 const grades = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级']
@@ -181,7 +188,11 @@ async function generate() {
 }
 
 async function loadList() {
-  plans.value = await listLessons({ limit: 50 })
+  try {
+    plans.value = await listLessons({ limit: 50 })
+  } catch {
+    // 全局拦截器已提示错误，列表保持为空即可，避免未捕获的 Promise rejection
+  }
 }
 
 function selectPlan(row: LessonPlan) {
@@ -215,11 +226,6 @@ onMounted(loadList)
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.empty {
-  text-align: center;
-  color: #98a1b0;
-  padding: 120px 0;
 }
 .lesson-head {
   text-align: center;
